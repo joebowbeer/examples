@@ -39,8 +39,6 @@ import org.apache.logging.log4j.Logger;
 public class DriverMobileAppSimulator {
   private static final Logger logger = LogManager.getLogger(DriverMobileAppSimulator.class);
 
-  private final KafkaPublisher producer = new KafkaPublisher();
-
   private static final long POLL_INTERVAL = 1000;
   private static final long MOVE_INTERVAL = 1000;
   private static final long PAUSE_BETWEEN_DELIVERIES = 2000;
@@ -54,6 +52,8 @@ public class DriverMobileAppSimulator {
   /** Mimics the driver setting himself to available in the app */
   @Handler
   public void startDriver(ObjectContext ctx) throws TerminalException {
+    var driverDigitalTwin = DriverDigitalTwinClient.fromContext(ctx, ctx.key());
+
     // If this driver was already created, do nothing
     if (ctx.get(CURRENT_LOCATION).isPresent()) {
       return;
@@ -62,10 +62,10 @@ public class DriverMobileAppSimulator {
     logger.info("Starting driver " + ctx.key());
     var location = ctx.run(Location.SERDE, GeoUtils::randomLocation);
     ctx.set(CURRENT_LOCATION, location);
-    producer.sendDriverUpdate(ctx.key(), Location.SERDE.serialize(location));
+    driverDigitalTwin.handleDriverLocationUpdateEvent(location);
 
     // Tell the digital twin of the driver in the food ordering app, that he is available
-    DriverDigitalTwinClient.fromContext(ctx, ctx.key())
+    driverDigitalTwin
         .setDriverAvailable(GeoUtils.DEMO_REGION)
         .await();
 
@@ -109,6 +109,8 @@ public class DriverMobileAppSimulator {
   /** Periodically lets the food ordering app know the new location */
   @Handler
   public void move(ObjectContext ctx) throws TerminalException {
+    var driverDigitalTwin = DriverDigitalTwinClient.fromContext(ctx, ctx.key());
+
     var thisDriverSim = DriverMobileAppSimulatorClient.fromContext(ctx, ctx.key());
     var assignedDelivery =
         ctx.get(ASSIGNED_DELIVERY)
@@ -126,7 +128,7 @@ public class DriverMobileAppSimulator {
     // Move to the next location
     var newLocation = GeoUtils.moveToDestination(currentLocation, nextDestination);
     ctx.set(CURRENT_LOCATION, newLocation);
-    producer.sendDriverUpdate(ctx.key(), Location.SERDE.serialize(newLocation));
+    driverDigitalTwin.handleDriverLocationUpdateEvent(newLocation);
 
     // If we reached the destination, notify the food ordering app
     if (newLocation.equals(nextDestination)) {
@@ -136,13 +138,13 @@ public class DriverMobileAppSimulator {
         ctx.clear(ASSIGNED_DELIVERY);
 
         // Notify the driver's digital twin in the food ordering app of the delivery success
-        DriverDigitalTwinClient.fromContext(ctx, ctx.key()).notifyDeliveryDelivered().await();
+        driverDigitalTwin.notifyDeliveryDelivered().await();
 
         // Take a small break before starting the next delivery
         ctx.sleep(Duration.ofMillis(PAUSE_BETWEEN_DELIVERIES));
 
         // Tell the driver's digital twin in the food ordering app, that he is available
-        DriverDigitalTwinClient.fromContext(ctx, ctx.key())
+        driverDigitalTwin
             .send()
             .setDriverAvailable(GeoUtils.DEMO_REGION);
 
@@ -156,7 +158,7 @@ public class DriverMobileAppSimulator {
       // and will start the delivery
       assignedDelivery.notifyPickup();
       ctx.set(ASSIGNED_DELIVERY, assignedDelivery);
-      DriverDigitalTwinClient.fromContext(ctx, ctx.key()).notifyDeliveryPickup().await();
+      driverDigitalTwin.notifyDeliveryPickup().await();
     }
 
     // Call this method again after a short delay
